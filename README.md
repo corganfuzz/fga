@@ -120,6 +120,8 @@ helm upgrade --install oauth2-proxy oauth2-proxy/oauth2-proxy \
 ```text
 xinfra/
 └── helm/
+    ├── monitoring/
+    │   └── values.yaml            # Prometheus/Grafana config
     ├── oauth2-proxy/
     │   ├── values.yaml            # Public OIDC config
     │   └── secrets.yaml           # PRIVATE (Gitignored) Auth0 keys
@@ -129,6 +131,84 @@ xinfra/
             ├── error-middleware.yaml # 401 -> login redirect
             └── auth0-middleware.yaml # Traefik -> Proxy handshake
 ```
+
+---
+
+## 📊 Monitoring (Observability)
+
+The cluster is equipped with a full Prometheus & Grafana stack for real-time monitoring.
+
+### 1. View Cluster Metrics (Grafana)
+
+**Port-forward the Grafana service:**
+```bash
+# Use local port 4000 as requested
+kubectl port-forward svc/prometheus-grafana 4000:80 -n monitoring
+```
+
+**Access the UI:**
+- **URL**: [http://localhost:4000](http://localhost:4000)
+- **User**: `admin`
+- **Password**: `admin`
+
+### 2. View Raw Metrics (Prometheus UI)
+If you want to query the raw metrics directly:
+```bash
+kubectl port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090 -n monitoring
+```
+- **URL**: [http://localhost:9090](http://localhost:9090)
+
+### 3. Import Official OpenFGA Dashboard
+The community ID `19471` can sometimes be out of sync. Use the official JSON provided by the OpenFGA team:
+1.  In Grafana, go to **Dashboards -> Import**.
+2.  **Upload JSON file**: Use the file at [xinfra/helm/monitoring/openfga-dashboard.json](file:///home/corganfuzz/fga/xinfra/helm/monitoring/openfga-dashboard.json).
+3.  Select `Prometheus` as the datasource and click **Import**.
+
+### 4. Generate Traffic (See Data in Dashboard)
+If your dashboard is empty, you need to generate some checks. Run the included script:
+```bash
+# In a new terminal (port-forward OpenFGA first):
+kubectl port-forward svc/openfga 8080:8080 -n openfga
+
+# Run the traffic generator:
+./xinfra/generate-fga-traffic.sh
+```
+
+**What is this doing?**
+The script is a "Check Simulator". It does the following:
+1.  **Iterates rapidly**: Sends a `/check` Request to OpenFGA every 0.1 seconds.
+2.  **Randomizes Subjects/Objects**: It picks random users (e.g., `user:42`) and random docs (e.g., `document:doc12`) and asks OpenFGA: *"Does this user have this relation (reader/writer) on this doc?"*
+3.  **Generates Telemetry**: These requests force OpenFGA to perform internal lookups, which triggers:
+    - **Request Rate Counter**: Shows how many checks/sec are happening.
+    - **Latency Histograms**: Shows how long the DB/Cache takes to answer.
+    - **Store Activity**: Updates metrics specific to your `STORE_ID`.
+
+**What are you seeing in Grafana?**
+- **Check Request Rate**: You'll see a steady line or "hump" at ~10 requests per second.
+- **Check Latency (P99)**: You'll see the 99th percentile of response times (usually <10ms locally).
+- **HTTP/gRPC Status Codes**: A sea of 200 OKs.
+
+### 4.5. Simulate Errors (See 4xx in Dashboard)
+To verify that your alerts and and error panels work, run the error simulator:
+```bash
+# Run the error generator:
+./xinfra/generate-fga-errors.sh
+```
+
+**What is this doing?**
+- **404 Not Found**: Sends requests with a bogus `STORE_ID`.
+- **400 Bad Request**: Sends malformed tuples (missing required fields).
+- **Undefined Relations**: Asks for permissions that don't exist in your model.
+
+**What will you see in Grafana?**
+- **Error Rate (Non-2xx)**: You'll see a sharp spike in the error count.
+- **HTTP status codes**: A mix of `400` and and `404` appearing in the "Status Codes" pie chart or time-series.
+
+---
+### 5. Monitoring your Services
+The `document-service` is now instrumented with **Prometheus client_golang**. 
+- **Scraper**: Automated via `ServiceMonitor` (check `xinfra/helm/document-service/templates/servicemonitor.yaml`).
+- **Endpoint**: `/metrics` on port `8090`.
 
 ---
 
@@ -297,6 +377,3 @@ curl -X POST http://localhost:8090/documents/doc1/share \
   -H "Content-Type: application/json" \
   -d '{"user":"fga_user", "relation":"writer"}'
 ```
-
-> [!IMPORTANT]
-> Use Method A to verify production security and Method B to quickly verify your Go application logic and OpenFGA tuple writing.

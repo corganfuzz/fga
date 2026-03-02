@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -19,6 +21,7 @@ func main() {
 	mux.HandleFunc("PUT /documents/{docID}", docHandler.UpdateDocument)
 	mux.HandleFunc("DELETE /documents/{docID}", docHandler.DeleteDocument)
 	mux.HandleFunc("POST /documents/{docID}/share", docHandler.ShareDocument)
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
