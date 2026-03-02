@@ -1,0 +1,21 @@
+# -- Number of OpenFGA replicas (1 is fine for local dev)
+replicaCount: 1
+
+datastore:
+  engine: postgres
+  # Updated with correct namespace (openfga)
+  uri: "postgres://postgres:password@openfga-postgresql.openfga.svc.cluster.local:5432/postgres?sslmode=disable"
+
+# Enable the bundled Bitnami PostgreSQL sub-chart
+postgresql:
+  enabled: true
+  image:
+    tag: latest
+  auth:
+    postgresPassword: "password"
+    database: "postgres"
+
+# Service config (ClusterIP is fine since Traefik will reach it internally)
+service:
+  type: ClusterIP
+  port: 8080

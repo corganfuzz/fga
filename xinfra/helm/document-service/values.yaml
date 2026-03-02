@@ -1,0 +1,14 @@
+image:
+  repository: document-service
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8090
+
+ingress:
+  host: document-service.local
+
+openfga:
+  apiUrl: "http://openfga.openfga.svc.cluster.local:8080"
+  storeId: 01KJNT55E86WH1AM7BDPNXYN3X

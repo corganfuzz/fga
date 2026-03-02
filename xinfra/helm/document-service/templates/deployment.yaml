@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: document-service
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8090
+          env:
+            - name: OPENFGA_API_URL
+              value: {{ .Values.openfga.apiUrl }}
+            - name: OPENFGA_STORE_ID
+              value: {{ .Values.openfga.storeId }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090

@@ -1,0 +1,20 @@
+# Helm
+charts/
+tmpcharts/
+*.tgz
+
+# Secrets
+*secret*.yaml
+*.pem
+*.key
+
+# Local
+values.local.yaml
+.env
+
+# IDEs
+.idea/
+.vscode/
+
+# OS
+.DS_Store

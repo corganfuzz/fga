@@ -1,0 +1,10 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: openfga-auth
+spec:
+  forwardAuth:
+    address: "http://openfga.openfga.svc.cluster.local:8080/"
+    trustForwardHeader: true
+    authResponseHeaders:
+      - "X-Auth-User"

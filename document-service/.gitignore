@@ -1,0 +1,19 @@
+# Binaries
+bin/
+app/app
+document-service
+
+# IDEs
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Go
+go.work
+go.work.sum
+
+# Env
+.env
+*.env
