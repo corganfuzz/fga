@@ -1,6 +1,6 @@
-# OpenFGA Local k3s Deployment Guide
+# OpenFGA Local k3d Deployment Guide
 
-This guide provides the exact commands and files to deploy OpenFGA (with PostgreSQL) and the `document-service` on your local k3s cluster, using Traefik as the authorization gateway.
+This guide provides the exact commands and files to deploy OpenFGA (with PostgreSQL) and the `document-service` on your local k3d cluster, using Traefik as the authorization gateway.
 
 ## Final Folder Structure
 
