@@ -2,6 +2,76 @@
 
 This guide provides the exact commands and files to deploy OpenFGA (with PostgreSQL) and the `document-service` on your local k3d cluster, using Traefik as the authorization gateway.
 
+## Architecture
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Traefik as Traefik (Ingress)
+    participant FGA as OpenFGA (AuthN/AuthZ)
+    participant DocSvc as Document Service
+    participant DB as PostgreSQL (FGA Store)
+
+    User->>Traefik: Request (GET/PUT/DELETE)
+    Traefik->>FGA: GET /check (ForwardAuth)
+    FGA-->>Traefik: 200 OK / 403 Forbidden
+    
+    alt Authorized
+        Traefik->>DocSvc: Forward Request
+        DocSvc-->>User: JSON Response
+    else Forbidden
+        Traefik-->>User: 403 Forbidden
+    end
+
+    User->>Traefik: Share Document (POST /share)
+    Traefik->>DocSvc: Forward Request
+    DocSvc->>FGA: SDK Write (Create Tuple)
+    FGA->>DB: Persist Tuple
+    DocSvc-->>User: 200 OK
+```
+
+## Kubernetes Infrastructure
+
+This diagram shows how the resources are organized across Namespaces and how the Traefik Middleware connects them.
+
+```mermaid
+graph TD
+    User([User / Developer])
+    
+    subgraph Cluster ["k3d Cluster"]
+        subgraph NS_Doc ["Namespace: document-service"]
+            Ingress["Ingress (document-service.local)"]
+            DocSvc["Service: document-service"]
+            MW["Middleware: openfga-auth"]
+            DocPod["Deployment: document-service"]
+        end
+
+        subgraph NS_FGA ["Namespace: openfga"]
+            FGASvc["Service: openfga"]
+            FGAPod["Deployment: openfga"]
+            PGDB[(PostgreSQL)]
+        end
+    end
+
+    Output_JSON([JSON Document/Status])
+    Output_FGA([Relationship Tuple])
+
+    User -- "GET/PUT/DELETE" --> Ingress
+    User -- "POST /share" --> Ingress
+    
+    Ingress -- 1. Auth Check --> MW
+    MW -- 2. /check --> FGASvc
+    
+    Ingress -- 3. Forward --> DocSvc
+    DocSvc --> DocPod
+    
+    DocPod -- "Update Memory" --> Output_JSON
+    DocPod -- "Create Tuple (SDK)" --> FGASvc
+    FGASvc --> FGAPod
+    FGAPod --> PGDB
+    PGDB --> Output_FGA
+```
+
 ## Final Folder Structure
 
 ```text
@@ -93,18 +163,16 @@ kubectl port-forward svc/openfga 8080:8080 -n openfga
 **2. Open in Browser:**
 Go to [http://localhost:3000](http://localhost:3000).
 
-**3. Connect to the API:**
-If the playground asks for an API URL, use: `http://localhost:8080`.
-
----
-
 ---
 
 ## Step 3: Create the OpenFGA Authorization Model
 
 This model mirrors your app's routes: users can `read`, `write`, or `own` documents.
 
-**File:** `platform-infra/openfga/model.fga`
+### Understanding the Model (`model.fga`)
+
+OpenFGA uses a **Relationship-Based Access Control (ReBAC)** model. Here is what each part of this model does:
+
 ```fga
 model
   schema 1.1
@@ -113,10 +181,20 @@ type user
 
 type document
   relations
+    define owner: [user]
     define reader: [user]
     define writer: [user]
-    define owner: [user]
 ```
+
+*   **`type user`**: Defines a fundamental entity (the "subject"). In this case, an individual user.
+*   **`type document`**: Defines the resource being protected.
+*   **`relations`**: These are "slots" where you can place users to give them permissions.
+    *   **`owner`**: Only a user assigned as an `owner` via a tuple will have this relation.
+    *   **`reader`**: Only a user assigned as a `reader` via a tuple will have this relation.
+    *   **`writer`**: Only a user assigned as a `writer` via a tuple will have this relation.
+
+> [!NOTE]
+> Currently, these relations are **independent**. In a production model, you would typically define inheritance, e.g., `define reader: [user] or writer`. This would mean any `writer` is automatically a `reader`.
 
 **File:** `platform-infra/openfga/setup-store.sh`
 ```bash
@@ -137,153 +215,23 @@ echo "Store ID: $STORE_ID"
 
 echo "Writing model..."
 fga model write --store-id "$STORE_ID" --file "$MODEL_FILE" --api-url "$OPENFGA_URL"
-
-echo ""
-echo "Done! Set these in your document-service deployment:"
-echo "  OPENFGA_STORE_ID=$STORE_ID"
-echo "  OPENFGA_API_URL=$OPENFGA_URL"
 ```
-
-**Run it (after port-forwarding):**
-```bash
-kubectl port-forward svc/openfga 8080:8080 -n openfga &
-chmod +x /home/corganfuzz/fga/platform-infra/openfga/setup-store.sh
-/home/corganfuzz/fga/platform-infra/openfga/setup-store.sh
-```
-> Note: This script requires the `fga` CLI for writing the model. Install it with: `go install github.com/openfga/cli/cmd/fga@latest`
 
 ---
 
-## Step 4: Helm Chart for the Document Service
+## Step 4: Real Document Service Implementation
 
-**File:** `platform-infra/helm/document-service/Chart.yaml`
-```yaml
-apiVersion: v2
-name: document-service
-description: Helm chart for the document-service Go app
-type: application
-version: 0.1.0
-appVersion: "1.0.0"
-```
+Your Go application uses the **OpenFGA Go SDK** to manage relationships and maintains an **in-memory store** for document content.
 
-**File:** `platform-infra/helm/document-service/values.yaml`
-```yaml
-image:
-  repository: document-service   # Update to your registry path, e.g. localhost:5000/document-service
-  tag: latest
-  pullPolicy: IfNotPresent
-
-service:
-  port: 8090
-
-ingress:
-  host: document-service.local   # Add this to your /etc/hosts pointing to your k3s node IP
-
-openfga:
-  apiUrl: "http://openfga.openfga.svc.cluster.local:8080"
-  storeId: "REPLACE_WITH_YOUR_STORE_ID"   # Get this from setup-store.sh output
-```
-
-**File:** `platform-infra/helm/document-service/templates/deployment.yaml`
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ .Release.Name }}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: {{ .Release.Name }}
-  template:
-    metadata:
-      labels:
-        app: {{ .Release.Name }}
-    spec:
-      containers:
-        - name: document-service
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          ports:
-            - containerPort: 8090
-          env:
-            - name: OPENFGA_API_URL
-              value: {{ .Values.openfga.apiUrl }}
-            - name: OPENFGA_STORE_ID
-              value: {{ .Values.openfga.storeId }}
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8090
-```
-
-**File:** `platform-infra/helm/document-service/templates/service.yaml`
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ .Release.Name }}
-spec:
-  selector:
-    app: {{ .Release.Name }}
-  ports:
-    - port: 8090
-      targetPort: 8090
-```
-
-**File:** `platform-infra/helm/document-service/templates/ingress.yaml`
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: {{ .Release.Name }}
-  annotations:
-    # Reference the Traefik ForwardAuth middleware defined below
-    traefik.ingress.kubernetes.io/router.middlewares: "{{ .Release.Namespace }}-openfga-auth@kubernetescrd"
-spec:
-  rules:
-    - host: {{ .Values.ingress.host }}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ .Release.Name }}
-                port:
-                  number: 8090
-```
-
-**File:** `platform-infra/helm/document-service/templates/traefik-middleware.yaml`
-```yaml
-apiVersion: traefik.containo.us/v1alpha1
-kind: Middleware
-metadata:
-  name: openfga-auth
-spec:
-  forwardAuth:
-    # This is the OpenFGA service internal URL (port 8080 is the HTTP API)
-    # In a real setup, this would point to an auth-adapter that translates
-    # Traefik's headers into an OpenFGA /check POST request.
-    address: "http://openfga.openfga.svc.cluster.local:8080/"
-    trustForwardHeader: true
-    authResponseHeaders:
-      - "X-Auth-User"
-```
-
-> [!WARNING]
-> Traefik's `ForwardAuth` sends a `GET` request to the `address`. OpenFGA's `/check` requires a structured `POST` body. In practice, you need a lightweight **auth-adapter** service between Traefik and OpenFGA that converts the incoming request context into the FGA tuple check. This is the next step once the base deployment is working.
-
-**Deploy the document-service:**
+**1. Building and Deploying:**
 ```bash
-# First, build and load the image into k3d (since there's no registry)
-# Build from the project root to include go.mod
+# Building from the root (to include go.mod)
 docker build -t document-service:latest -f /home/corganfuzz/fga/document-service/app/Dockerfile /home/corganfuzz/fga/document-service
 
-# Import into k3d (replace 'localHTC' with your cluster name if different)
+# Import into k3d
 k3d image import document-service:latest -c localHTC
 
-# Then deploy with Helm
+# Deploy with Helm
 helm upgrade --install document-service \
   /home/corganfuzz/fga/platform-infra/helm/document-service \
   --namespace document-service \
@@ -293,24 +241,37 @@ helm upgrade --install document-service \
 
 ---
 
-## Step 5: Smoke Test
+## Step 5: Smoke Test (Ingress)
 
-Because `document-service.local` is a custom domain, you need to tell your machine how to resolve it.
-
-**Option A: Update /etc/hosts (Recommended)**
-Add this line to your `/etc/hosts` file:
-```text
-127.0.0.1 document-service.local
-```
-Then run:
-```bash
-curl http://document-service.local/healthz
-```
-
-**Option B: Use curl --resolve**
-If you don't want to edit `/etc/hosts`, use this command:
 ```bash
 curl --resolve document-service.local:80:127.0.0.1 http://document-service.local/healthz
+# Expected Output: {"status":"ok"}
 ```
 
-**Expected Output:** `{"status":"ok"}`
+---
+
+## Step 6: Verify Real Implementation (Functional Test)
+
+Verify document storage and OpenFGA sharing:
+
+**1. Create/Update a Document:**
+```bash
+# Port-forward first: kubectl port-forward svc/document-service 8090:8090 -n document-service
+curl -X PUT http://localhost:8090/documents/doc1 -d '{"content":"Hello FGA"}'
+# Output: {"document":"doc1","status":"updated"}
+```
+
+**2. Retrieve the Document:**
+```bash
+curl http://localhost:8090/documents/doc1
+# Output: {"id":"doc1","content":"Hello FGA"}
+```
+
+**3. Share the Document (OpenFGA Tuple Write):**
+```bash
+curl -X POST http://localhost:8090/documents/doc1/share \
+  -H "Content-Type: application/json" \
+  -d '{"user":"fga_user", "relation":"writer"}'
+# Output: {"as":"writer","document":"doc1","shared_with":"fga_user","status":"ok"}
+```
+*(Verify the tuple in your OpenFGA Playground!)*

@@ -8,12 +8,17 @@ import (
 )
 
 func main() {
+	docHandler, err := handlers.NewDocumentHandler()
+	if err != nil {
+		log.Fatalf("Failed to initialize document handler: %v", err)
+	}
+
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /documents/{docID}", handlers.GetDocument)
-	mux.HandleFunc("PUT /documents/{docID}", handlers.UpdateDocument)
-	mux.HandleFunc("DELETE /documents/{docID}", handlers.DeleteDocument)
-	mux.HandleFunc("POST /documents/{docID}/share", handlers.ShareDocument)
+	mux.HandleFunc("GET /documents/{docID}", docHandler.GetDocument)
+	mux.HandleFunc("PUT /documents/{docID}", docHandler.UpdateDocument)
+	mux.HandleFunc("DELETE /documents/{docID}", docHandler.DeleteDocument)
+	mux.HandleFunc("POST /documents/{docID}/share", docHandler.ShareDocument)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
