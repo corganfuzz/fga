@@ -210,6 +210,9 @@ The `document-service` is now instrumented with **Prometheus client_golang**.
 - **Scraper**: Automated via `ServiceMonitor` (check `xinfra/helm/document-service/templates/servicemonitor.yaml`).
 - **Endpoint**: `/metrics` on port `8090`.
 
+
+<img width="1903" height="2078" alt="Screenshot from 2026-03-02 00-00-20" src="https://github.com/user-attachments/assets/a73fdecc-0c1b-42a0-94e9-328334b64c42" />
+
 ---
 
 ## Auth0 Implementation Details
