@@ -19,3 +19,11 @@ postgresql:
 service:
   type: ClusterIP
   port: 8080
+
+telemetry:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        release: prometheus

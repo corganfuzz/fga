@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "document-service.fullname" . }}
+  labels:
+    release: prometheus # Custom label to match the Prometheus operator selector
+    {{- include "document-service.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "document-service.selectorLabels" . | nindent 6 }}
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 15s

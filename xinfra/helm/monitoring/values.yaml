@@ -1,0 +1,39 @@
+# Prometheus / Grafana stack values for local k3d
+grafana:
+  adminPassword: "admin"
+  service:
+    type: ClusterIP
+
+prometheus:
+  prometheusSpec:
+    # Retention period for data
+    retention: 1d
+    # Scrape interval
+    scrapeInterval: 15s
+
+# Prometheus Operator settings
+prometheusOperator:
+  enabled: true
+
+# Clean up default rules/alerts to save resources in local cluster
+defaultRules:
+  create: true
+  rules:
+    kubeProxy: false
+    kubeScheduler: false
+    kubeControllerManager: false
+
+# Alertmanager configuration (optional for local dev)
+alertmanager:
+  enabled: true
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['job']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'null'
+    receivers:
+    - name: 'null'
