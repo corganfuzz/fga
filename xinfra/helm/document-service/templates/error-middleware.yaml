@@ -1,0 +1,12 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: auth0-errors
+spec:
+  errors:
+    status:
+      - "401"
+    query: "/oauth2/start?rd={url}"
+    service:
+      name: oauth2-proxy
+      port: 80

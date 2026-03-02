@@ -18,3 +18,5 @@ values.local.yaml
 
 # OS
 .DS_Store
+
+xinfra/helm/oauth2-proxy/secrets.yaml

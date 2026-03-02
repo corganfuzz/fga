@@ -20,7 +20,11 @@ kind: Ingress
 metadata:
   name: {{ .Release.Name }}-auth
   annotations:
-    traefik.ingress.kubernetes.io/router.middlewares: "{{ .Release.Namespace }}-openfga-auth@kubernetescrd"
+    # CHAINING: First check Auth0 (Who?), then check OpenFGA (What can they do?)
+    traefik.ingress.kubernetes.io/router.middlewares: |
+      {{ .Release.Namespace }}-auth0-errors@kubernetescrd,
+      {{ .Release.Namespace }}-auth0-proxy@kubernetescrd,
+      {{ .Release.Namespace }}-openfga-auth@kubernetescrd
 spec:
   rules:
     - host: {{ .Values.ingress.host }}

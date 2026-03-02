@@ -1,0 +1,13 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: auth0-proxy
+spec:
+  forwardAuth:
+    # Points to the oauth2-proxy service in the document-service namespace
+    address: "http://oauth2-proxy.document-service.svc.cluster.local/oauth2/auth"
+    trustForwardHeader: true
+    authResponseHeaders:
+      - "X-Auth-User"
+      - "Authorization"
+      - "Set-Cookie" # Critical for keeping the session!

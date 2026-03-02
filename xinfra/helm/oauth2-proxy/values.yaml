@@ -1,0 +1,20 @@
+# oauth2-proxy values.yaml for Auth0
+config:
+  clientID: ""
+  clientSecret: ""
+  # Generated cookie secret
+  cookieSecret: ""
+  
+  # Upstream settings (Static 204 for validation only)
+  upstream: "static://204"
+  
+  # Cookie security (set to false for local k3d/HTTP testing, true for HTTPS)
+  cookieSecure: false
+
+extraArgs:
+  # Explicitly set OIDC provider
+  provider: "oidc"
+  oidc-issuer-url: "https://dev-vuep7ed3c6we2luz.us.auth0.com/"
+  provider-display-name: "Auth0"
+  whitelist-domain: ".document-service.local"
+  cookie-domain: ".document-service.local"

@@ -2,95 +2,146 @@
 
 This guide provides the exact commands and files to deploy OpenFGA (with PostgreSQL) and the `document-service` on your local k3d cluster, using Traefik as the authorization gateway.
 
-## Architecture
+## Architecture (Logical Flow)
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant User
     participant Traefik as Traefik (Ingress)
-    participant FGA as OpenFGA (AuthN/AuthZ)
+    participant Auth0 as Auth0 (Authentication)
+    participant FGA as OpenFGA (Authorization)
     participant DocSvc as Document Service
-    participant DB as PostgreSQL (FGA Store)
+    participant DB as PostgreSQL
 
-    User->>Traefik: Request (GET/PUT/DELETE)
-    Traefik->>FGA: GET /check (ForwardAuth)
-    FGA-->>Traefik: 200 OK / 403 Forbidden
+    User->>Traefik: 1. Request (GET /doc1)
     
-    alt Authorized
-        Traefik->>DocSvc: Forward Request
-        DocSvc-->>User: JSON Response
-    else Forbidden
-        Traefik-->>User: 403 Forbidden
+    rect rgb(200, 230, 255)
+    Note over Traefik,Auth0: Authentication Layer
+    Traefik->>Auth0: 2. Redirect to Login (if no session)
+    User->>Auth0: 3. Authenticate
+    Auth0-->>Traefik: 4. JWT Callback
     end
 
-    User->>Traefik: Share Document (POST /share)
-    Traefik->>DocSvc: Forward Request
-    DocSvc->>FGA: SDK Write (Create Tuple)
-    FGA->>DB: Persist Tuple
-    DocSvc-->>User: 200 OK
+    rect rgb(230, 255, 230)
+    Note over Traefik,FGA: Authorization Layer
+    Traefik->>FGA: 5. check(user, read, doc1)
+    FGA-->>Traefik: 6. Allowed / Denied
+    end
+    
+    alt Allowed
+        Traefik->>DocSvc: 7. Forward Request
+        DocSvc-->>User: 200 OK (Document Content)
+    else Denied
+        Traefik-->>User: 403 Forbidden
+    end
 ```
 
-## Kubernetes Infrastructure
-
-This diagram shows how the resources are organized across Namespaces and how the Traefik Middleware connects them.
+## Kubernetes Infrastructure (Vertical Map)
 
 ```mermaid
 graph TD
     User([User / Developer])
     
     subgraph Cluster ["k3d Cluster"]
+        direction TB
+        
         subgraph NS_Doc ["Namespace: document-service"]
             Ingress["Ingress (document-service.local)"]
             DocSvc["Service: document-service"]
-            MW["Middleware: openfga-auth"]
-            DocPod["Deployment: document-service"]
+            
+            subgraph Security_Chain ["Chained Security"]
+                MW_Err["MW: auth0-errors"]
+                MW_Auth["MW: auth0-proxy"]
+                MW_FGA["MW: openfga-auth"]
+            end
+            
+            DocPod["Pod: document-service"]
+            OAuth2["Pod: oauth2-proxy"]
         end
 
         subgraph NS_FGA ["Namespace: openfga"]
             FGASvc["Service: openfga"]
-            FGAPod["Deployment: openfga"]
+            FGAPod["Pod: openfga"]
             PGDB[(PostgreSQL)]
         end
     end
 
-    Output_JSON([JSON Document/Status])
-    Output_FGA([Relationship Tuple])
-
-    User -- "GET/PUT/DELETE" --> Ingress
-    User -- "POST /share" --> Ingress
+    %% Flow
+    User -- "HTTP Request" --> Ingress
+    Ingress --> Security_Chain
     
-    Ingress -- 1. Auth Check --> MW
-    MW -- 2. /check --> FGASvc
+    Security_Chain --> MW_Err
+    MW_Err -. "401 Redirect" .-> OAuth2
     
-    Ingress -- 3. Forward --> DocSvc
+    Security_Chain --> MW_Auth
+    MW_Auth -- "Validate Session" --> OAuth2
+    
+    Security_Chain --> MW_FGA
+    MW_FGA -- "Check Tuple" --> FGASvc
+    
+    Security_Chain --> DocSvc
     DocSvc --> DocPod
     
-    DocPod -- "Update Memory" --> Output_JSON
-    DocPod -- "Create Tuple (SDK)" --> FGASvc
     FGASvc --> FGAPod
     FGAPod --> PGDB
-    PGDB --> Output_FGA
 ```
+
+---
+
+## Step 0: Deploy Auth0 Authentication (oauth2-proxy)
+
+To keep your cluster secure, Auth0 credentials are split into a public `values.yaml` and a private `secrets.yaml` (which is gitignored).
+
+**1. Create your secret file:**
+`xinfra/helm/oauth2-proxy/secrets.yaml`
+```yaml
+config:
+  clientID: "YOUR_CLIENT_ID"
+  clientSecret: "YOUR_CLIENT_SECRET"
+  cookieSecret: "YOUR_RANDOM_COOKIE_SECRET"
+```
+
+**2. Deploy the proxy:**
+```bash
+helm repo add oauth2-proxy https://oauth2-proxy.github.io/charts
+helm repo update
+
+helm upgrade --install oauth2-proxy oauth2-proxy/oauth2-proxy \
+  --namespace document-service \
+  -f /home/corganfuzz/fga/xinfra/helm/oauth2-proxy/values.yaml \
+  -f /home/corganfuzz/fga/xinfra/helm/oauth2-proxy/secrets.yaml
+```
+
+---
 
 ## Final Folder Structure
 
 ```text
-platform-infra/
-├── helm/
-│   ├── openfga/
-│   │   └── values.yaml            # OpenFGA config pointing to Postgres
-│   └── document-service/
-│       ├── Chart.yaml             # Helm chart for your Go app
-│       ├── values.yaml            # App config (image, port, ingress)
-│       └── templates/
-│           ├── deployment.yaml
-│           ├── service.yaml
-│           ├── ingress.yaml
-│           └── traefik-middleware.yaml
-└── openfga/
-    ├── model.fga                  # Authorization rules (DSL)
-    └── setup-store.sh             # Create store + write model
+xinfra/
+└── helm/
+    ├── oauth2-proxy/
+    │   ├── values.yaml            # Public OIDC config
+    │   └── secrets.yaml           # PRIVATE (Gitignored) Auth0 keys
+    └── document-service/
+        └── templates/
+            ├── oauth2-ingress.yaml # /oauth2 path routing
+            ├── error-middleware.yaml # 401 -> login redirect
+            └── auth0-middleware.yaml # Traefik -> Proxy handshake
 ```
+
+---
+
+## Auth0 Implementation Details
+
+The authentication layer follows a **ForwardAuth** pattern:
+
+1.  **Traefik Ingress**: Catches all requests to `document-service.local`.
+2.  **`auth0-errors` Middleware**: If the proxy returns a `401 Unauthorized`, this middleware catches it and redirects your browser to `/oauth2/start`.
+3.  **`auth0-proxy` Middleware**: This is the "ForwardAuth" check. It asks `oauth2-proxy`: *"Is this user logged in?"*
+4.  **`oauth2-proxy`**: 
+    - If **Yes**: It returns 200 OK and passes the user session/JWT back to Traefik.
+    - If **No**: It returns 401, triggering the error redirect above.
 
 ---
 
@@ -147,16 +198,14 @@ kubectl get pods -n openfga
 
 ## Accessing the OpenFGA Playground
 
-The OpenFGA Playground is a web-based UI to visualize your models and test tuples. It is included by default.
+The OpenFGA Playground is a web-based UI to visualize your models and test tuples.
 
 **1. Port-Forward the Playground (3000) AND the API (8080):**
-The Playground runs in your browser but needs to "talk" to the OpenFGA API. You must forward both:
-
 ```bash
-# In one terminal:
+# Terminal 1:
 kubectl port-forward svc/openfga 3000:3000 -n openfga
 
-# In another terminal:
+# Terminal 2:
 kubectl port-forward svc/openfga 8080:8080 -n openfga
 ```
 
@@ -166,35 +215,6 @@ Go to [http://localhost:3000](http://localhost:3000).
 ---
 
 ## Step 3: Create the OpenFGA Authorization Model
-
-This model mirrors your app's routes: users can `read`, `write`, or `own` documents.
-
-### Understanding the Model (`model.fga`)
-
-OpenFGA uses a **Relationship-Based Access Control (ReBAC)** model. Here is what each part of this model does:
-
-```fga
-model
-  schema 1.1
-
-type user
-
-type document
-  relations
-    define owner: [user]
-    define reader: [user]
-    define writer: [user]
-```
-
-*   **`type user`**: Defines a fundamental entity (the "subject"). In this case, an individual user.
-*   **`type document`**: Defines the resource being protected.
-*   **`relations`**: These are "slots" where you can place users to give them permissions.
-    *   **`owner`**: Only a user assigned as an `owner` via a tuple will have this relation.
-    *   **`reader`**: Only a user assigned as a `reader` via a tuple will have this relation.
-    *   **`writer`**: Only a user assigned as a `writer` via a tuple will have this relation.
-
-> [!NOTE]
-> Currently, these relations are **independent**. In a production model, you would typically define inheritance, e.g., `define reader: [user] or writer`. This would mean any `writer` is automatically a `reader`.
 
 **File:** `platform-infra/openfga/setup-store.sh`
 ```bash
@@ -221,57 +241,62 @@ fga model write --store-id "$STORE_ID" --file "$MODEL_FILE" --api-url "$OPENFGA_
 
 ## Step 4: Real Document Service Implementation
 
-Your Go application uses the **OpenFGA Go SDK** to manage relationships and maintains an **in-memory store** for document content.
-
 **1. Building and Deploying:**
 ```bash
-# Building from the root (to include go.mod)
+# Building
 docker build -t document-service:latest -f /home/corganfuzz/fga/document-service/app/Dockerfile /home/corganfuzz/fga/document-service
 
 # Import into k3d
 k3d image import document-service:latest -c localHTC
 
-# Deploy with Helm
+# Deploy
 helm upgrade --install document-service \
   /home/corganfuzz/fga/platform-infra/helm/document-service \
   --namespace document-service \
   --create-namespace \
-  --set openfga.storeId=<STORE_ID_FROM_SETUP_SCRIPT>
+  --set openfga.storeId=<YOUR_STORE_ID>
 ```
 
 ---
 
-## Step 5: Smoke Test (Ingress)
+## Step 6: Testing the Implementation
 
+### A. Testing through the Secure Gateway (Ingress)
+
+This test validates the **Auth0 + OpenFGA** security chain.
+
+1.  **Browser Test**: Open `http://document-service.local/`.
+    *   **Success**: You are redirected to Auth0, you log in, and then you see the document status.
+2.  **CLI Test**:
+    ```bash
+    curl -I --resolve document-service.local:80:127.0.0.1 http://document-service.local/
+    ```
+    *   **Success**: You receive a `302 Found` (Redirect to Auth0).
+
+### B. Testing Direct Service (Admin/Debug Bypass)
+
+If you want to test the document service logic directly (e.g., creating documents without needing a browser), you can **bypass** the Ingress by using a `port-forward`.
+
+**1. Port-forward the service:**
 ```bash
-curl --resolve document-service.local:80:127.0.0.1 http://document-service.local/healthz
-# Expected Output: {"status":"ok"}
+kubectl port-forward svc/document-service 8090:8090 -n document-service
 ```
 
----
+**2. Run direct CRUD commands:**
+These commands go straight to your Go app, bypassing Traefik's Auth0/OpenFGA checks.
 
-## Step 6: Verify Real Implementation (Functional Test)
-
-Verify document storage and OpenFGA sharing:
-
-**1. Create/Update a Document:**
 ```bash
-# Port-forward first: kubectl port-forward svc/document-service 8090:8090 -n document-service
-curl -X PUT http://localhost:8090/documents/doc1 -d '{"content":"Hello FGA"}'
-# Output: {"document":"doc1","status":"updated"}
-```
+# Create/Update a Document
+curl -X PUT http://localhost:8090/documents/doc1 -d '{"content":"Hello Secure FGA"}'
 
-**2. Retrieve the Document:**
-```bash
+# Retrieve the Document
 curl http://localhost:8090/documents/doc1
-# Output: {"id":"doc1","content":"Hello FGA"}
-```
 
-**3. Share the Document (OpenFGA Tuple Write):**
-```bash
+# Share the Document (Writes to OpenFGA)
 curl -X POST http://localhost:8090/documents/doc1/share \
   -H "Content-Type: application/json" \
   -d '{"user":"fga_user", "relation":"writer"}'
-# Output: {"as":"writer","document":"doc1","shared_with":"fga_user","status":"ok"}
 ```
-*(Verify the tuple in your OpenFGA Playground!)*
+
+> [!IMPORTANT]
+> Use Method A to verify production security and Method B to quickly verify your Go application logic and OpenFGA tuple writing.
