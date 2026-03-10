@@ -37,7 +37,7 @@ sequenceDiagram
     end
 ```
 
-## Kubernetes Infrastructure (Vertical Map)
+## Kubernetes Infrastructure
 
 ```mermaid
 graph TD
